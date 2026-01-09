@@ -18,3 +18,8 @@ windows/flutter/ephemeral/
 .idea/
 *.iml
 .vscode/
+# Node / Next.js
+node_modules/
+dashboard/node_modules/
+.next/
+dashboard/.next/
