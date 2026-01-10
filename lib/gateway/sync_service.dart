@@ -13,6 +13,14 @@ class SyncService {
   final ValueNotifier<bool> isSyncing = ValueNotifier(false);
   final ValueNotifier<int> pendingCount = ValueNotifier(0);
 
+  // USER TODO: Replace with your actual endpoint
+  // Use 10.0.2.2 for Android Emulator to access host's localhost:3000
+  // Try port 3000 first, fallback to 3001
+  // Using ADB reverse proxy: adb reverse tcp:3000 tcp:3000
+  String cloudEndpoint = 'http://127.0.0.1:3000/api/sync';
+  String backupEndpoint = 'http://10.0.2.2:3000/api/sync';
+  String backupEndpoint2 = 'http://192.168.0.195:3000/api/sync';
+
   Future<void> syncData() async {
     final connectivity = await Connectivity().checkConnectivity();
     if (connectivity == ConnectivityResult.none) return;
@@ -21,8 +29,10 @@ class SyncService {
 
     try {
       final db = await AppDatabase.database;
+      // FIX: Handle NULL status (older messages) explicitly
       final rows = await db.query('messages',
-          where: 'status != ?', whereArgs: ['synced_to_cloud']);
+          where: 'status IS NULL OR status != ?',
+          whereArgs: ['synced_to_cloud']);
 
       pendingCount.value = rows.length;
 
@@ -31,13 +41,32 @@ class SyncService {
         return;
       }
 
-      // Mock Supabase Push
-      // await http.post...
-      await Future.delayed(const Duration(seconds: 2)); // Simulate network
+      // Real Sync
+      debugPrint('SyncService: Syncing ${rows.length} messages to cloud...');
 
-      // In real implementation:
-      // final response = await http.post(Uri.parse('SUPABASE_URL'), body: jsonEncode(rows));
-      // if (response.statusCode == 200) ...
+      bool success = false;
+
+      // Try Primary Port (3000)
+      try {
+        await _performSync(cloudEndpoint, rows);
+        success = true;
+      } catch (e) {
+        debugPrint('SyncService: Port 3000 failed, trying 3001: $e');
+        try {
+          await _performSync(backupEndpoint, rows);
+          success = true;
+        } catch (e2) {
+          debugPrint('SyncService: Port 3001 failed, trying 3002: $e2');
+          try {
+            await _performSync(backupEndpoint2, rows);
+            success = true;
+          } catch (e3) {
+            debugPrint('SyncService: Port 3002 failed too: $e3');
+          }
+        }
+      }
+
+      if (!success) return;
 
       // Mark as synced
       for (final row in rows) {
@@ -48,12 +77,30 @@ class SyncService {
           whereArgs: [row['id']],
         );
       }
+      debugPrint(
+          'SyncService: Marked ${rows.length} messages as synced locally.');
 
       pendingCount.value = 0;
     } catch (e) {
-      print('Sync failed: $e');
+      debugPrint('Sync failed: $e');
     } finally {
       isSyncing.value = false;
+    }
+  }
+
+  Future<void> _performSync(String url, List<Map<String, Object?>> rows) async {
+    final response = await http
+        .post(
+          Uri.parse(url),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(rows),
+        )
+        .timeout(const Duration(seconds: 15));
+
+    if (response.statusCode >= 200 && response.statusCode < 300) {
+      debugPrint('SyncService: Upload success to $url');
+    } else {
+      throw Exception('Status ${response.statusCode}');
     }
   }
 
